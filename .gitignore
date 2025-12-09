@@ -34,3 +34,8 @@ Env
 .env.local
 config.json
 downloads/
+
+config.json
+.vs/
+*.pyc
+__pycache__/
