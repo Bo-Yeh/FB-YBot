@@ -1,0 +1,6 @@
+facebook-sdk
+openai
+aiohttp
+beautifulsoup4
+requests
+python-dotenv
