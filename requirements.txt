@@ -4,3 +4,5 @@ aiohttp
 beautifulsoup4
 requests
 python-dotenv
+instagrapi
+pillow

@@ -8,6 +8,8 @@ import re
 import os
 import sys
 from spider import getnews, setn_fetch_url, fetch_news_preview
+from instagrapi import Client
+from instagrapi.exceptions import LoginRequired
 
 # ----------------- 載入設定（環境變數優先，若無則 fallback 到 config.json） -----------------
 def load_config():
@@ -18,6 +20,10 @@ def load_config():
     MODE = os.getenv("MODE")
     POST_DELAY_MIN = os.getenv("POST_DELAY_MIN")
     POST_DELAY_MAX = os.getenv("POST_DELAY_MAX")
+    IG_USERNAME = os.getenv("IG_USERNAME")
+    IG_PASSWORD = os.getenv("IG_PASSWORD")
+    POST_TO_FACEBOOK = os.getenv("POST_TO_FACEBOOK")
+    POST_TO_INSTAGRAM = os.getenv("POST_TO_INSTAGRAM")
 
     # 若至少有一個必要參數不存在，嘗試從 config.json 讀取（方便本地測試）
     if not (API_KEY and FB_TOKEN and NEWS and MODE):
@@ -30,6 +36,10 @@ def load_config():
             MODE = MODE or data.get("MODE")
             POST_DELAY_MIN = POST_DELAY_MIN or data.get("POST_DELAY_MIN")
             POST_DELAY_MAX = POST_DELAY_MAX or data.get("POST_DELAY_MAX")
+            IG_USERNAME = IG_USERNAME or data.get("IG_USERNAME")
+            IG_PASSWORD = IG_PASSWORD or data.get("IG_PASSWORD")
+            POST_TO_FACEBOOK = POST_TO_FACEBOOK if POST_TO_FACEBOOK is not None else data.get("POST_TO_FACEBOOK")
+            POST_TO_INSTAGRAM = POST_TO_INSTAGRAM if POST_TO_INSTAGRAM is not None else data.get("POST_TO_INSTAGRAM")
         except FileNotFoundError:
             # 沒有 config.json 也 OK，之後會檢查必要變數
             pass
@@ -46,10 +56,20 @@ def load_config():
         POST_DELAY_MAX = 3 * 60 * 60
 
     MODE = MODE or "setn"
+    
+    # 轉換布林值
+    if isinstance(POST_TO_FACEBOOK, str):
+        POST_TO_FACEBOOK = POST_TO_FACEBOOK.lower() in ['true', '1', 'yes']
+    if isinstance(POST_TO_INSTAGRAM, str):
+        POST_TO_INSTAGRAM = POST_TO_INSTAGRAM.lower() in ['true', '1', 'yes']
+    
+    # 預設值
+    POST_TO_FACEBOOK = POST_TO_FACEBOOK if POST_TO_FACEBOOK is not None else True
+    POST_TO_INSTAGRAM = POST_TO_INSTAGRAM if POST_TO_INSTAGRAM is not None else False
 
-    return API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX
+    return API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, POST_TO_FACEBOOK, POST_TO_INSTAGRAM
 
-API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX = load_config()
+API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, POST_TO_FACEBOOK, POST_TO_INSTAGRAM = load_config()
 
 # 檢查必要變數
 missing = []
@@ -65,7 +85,21 @@ if missing:
     sys.exit(1)
 
 # init FB graph
-graph = facebook.GraphAPI(access_token=FB_TOKEN)
+if POST_TO_FACEBOOK:
+    graph = facebook.GraphAPI(access_token=FB_TOKEN)
+else:
+    graph = None
+
+# init Instagram client
+ig_client = None
+if POST_TO_INSTAGRAM and IG_USERNAME and IG_PASSWORD:
+    try:
+        ig_client = Client()
+        ig_client.login(IG_USERNAME, IG_PASSWORD)
+        print("✅ Instagram 登入成功")
+    except Exception as e:
+        print(f"⚠️ Instagram 登入失敗: {e}")
+        ig_client = None
 
 # 延遲時間
 def compute_delay():
@@ -76,12 +110,24 @@ def compute_delay():
     return random.uniform(_min, _max)
 
 # GPT Prompt
-prompt = """
-你是一名專業的醫師，根據新聞撰寫跟新聞相關的內容好像在民眾對話的感覺，
-請使用繁體中文且吸引人，輸出僅包含內文，不要標題、盡可能簡短明瞭不超過50字。
+# prompt = """
+# 你是一名專業的醫師，根據新聞撰寫跟新聞相關的內容好像在民眾對話的感覺，
+# 請使用繁體中文且吸引人，輸出僅包含內文，不要標題、盡可能簡短明瞭不超過50字。
+# """
+
+prompt_with_title = """
+你是一名專業的醫師，根據新聞內容生成社群媒體貼文，內容須像與民眾對話的感覺。
+請用繁體中文生成以下內容：
+1. 短標題：吸引觀眾的精簡標題，10-15字以內，適合放在圖片上
+2. 內文：像在跟民眾對話的感覺，簡短明瞭不超過50字
+
+請按照以下格式輸出：
+標題：[你的短標題]
+內文：[你的內文]
 """
 
 async def text_api(msg: str) -> str:
+    """僅生成內文"""
     if not msg:
         return "這段訊息是空的"
     def _call():
@@ -90,7 +136,6 @@ async def text_api(msg: str) -> str:
             result = client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": prompt},
                     {"role": "user", "content": msg}
                 ],
                 temperature=1.0,
@@ -111,19 +156,301 @@ async def text_api(msg: str) -> str:
             return "生成失敗"
     return await asyncio.to_thread(_call)
 
+async def text_api_with_title(msg: str) -> tuple:
+    """生成短標題和內文，返回 (標題, 內文)"""
+    if not msg:
+        return "這段訊息是空的", "這段訊息是空的"
+    def _call():
+        try:
+            client = openai.OpenAI(api_key=API_KEY)
+            result = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": prompt_with_title},
+                    {"role": "user", "content": msg}
+                ],
+                temperature=1.0,
+                max_tokens=300
+            )
+            # 支援不同回傳格式
+            try:
+                content = result.choices[0].message.content.strip()
+            except Exception:
+                # fallback: 可能為 dict 形式
+                if isinstance(result, dict) and "choices" in result and len(result["choices"])>0:
+                    ch = result["choices"][0]
+                    if isinstance(ch, dict) and "message" in ch and "content" in ch["message"]:
+                        content = ch["message"]["content"].strip()
+                    else:
+                        return "生成失敗", "生成失敗"
+                else:
+                    return "生成失敗", "生成失敗"
+            
+            # 解析標題和內文
+            lines = content.split('\n')
+            title = ""
+            text = ""
+            
+            for line in lines:
+                if line.startswith("標題：") or line.startswith("標題:"):
+                    title = line.replace("標題：", "").replace("標題:", "").strip()
+                elif line.startswith("內文：") or line.startswith("內文:"):
+                    text = line.replace("內文：", "").replace("內文:", "").strip()
+            
+            # 如果解析失敗，嘗試使用整個內容
+            if not title or not text:
+                # 嘗試按換行分割，第一行當標題，其餘當內文
+                parts = content.split('\n', 1)
+                if len(parts) == 2:
+                    title = parts[0].strip()
+                    text = parts[1].strip()
+                else:
+                    title = content[:15] + "..."  # 取前15字作為標題
+                    text = content
+            
+            return title, text
+        except Exception as e:
+            print("GPT 發生錯誤:", e)
+            return "生成失敗", "生成失敗"
+    return await asyncio.to_thread(_call)
+
+async def generate_hashtags(news_content: str) -> str:
+    """根據新聞內容生成相關標籤"""
+    if not news_content:
+        return "#新聞 #健康 #醫療"
+    
+    def _call():
+        try:
+            client = openai.OpenAI(api_key=API_KEY)
+            result = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": """你是一個社群媒體專家。
+根據新聞內容生成相關的繁體中文標籤。
+標籤應該：
+1. 與新聞主題相關
+2. 具有搜尋熱度
+3. 每個標籤前面加 #
+4. 用空格分隔
+5. 數量不限，但建議 5-10 個
+
+只輸出標籤，不要其他解釋。"""},
+                    {"role": "user", "content": f"新聞內容：{news_content}"}
+                ],
+                temperature=0.7,
+                max_tokens=200
+            )
+            hashtags = result.choices[0].message.content.strip()
+            # 確保每個標籤都有 #
+            if not hashtags.startswith("#"):
+                hashtags = "#" + hashtags
+            return hashtags
+        except Exception as e:
+            print(f"生成標籤錯誤: {e}")
+            return "#新聞 #健康 #醫療"
+    
+    return await asyncio.to_thread(_call)
+
 # ================= 發文 ===================
 def post_to_facebook(text):
+    if not POST_TO_FACEBOOK or not graph:
+        return
     try:
         graph.put_object(parent_object='me', connection_name='feed', message=text)
         print("✅ 已發布到 Facebook")
     except Exception as e:
         print("❌ Facebook 發文錯誤:", e)
 
+def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
+    """發布貼文到 Instagram，生成隨機淺色背景圖片，標題置中，底部提示查看連結
+    
+    Args:
+        text: 貼文內文（如果已經包含連結，則不再添加）
+        image_title: 圖片上顯示的短標題（如果沒有提供，則從 text 中提取）
+        news_url: 新聞連結（如果 text 已包含則不再添加）
+        hashtags: 自動生成的標籤
+    """
+    if not POST_TO_INSTAGRAM or not ig_client:
+        return
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        import tempfile
+        
+        # 生成隨機淺色背景 (RGB 值範圍 200-255)
+        bg_r = random.randint(200, 255)
+        bg_g = random.randint(200, 255)
+        bg_b = random.randint(200, 255)
+        bg_color = (bg_r, bg_g, bg_b)
+        
+        # 創建圖片
+        img = Image.new('RGB', (1080, 1080), color=bg_color)
+        d = ImageDraw.Draw(img)
+        
+        # 載入繁體中文字體
+        font_title = None
+        font_footer = None
+        
+        # 嘗試載入常見的中文字體
+        chinese_fonts = [
+            "C:/Windows/Fonts/msjh.ttc",      # 微軟正黑體
+            "C:/Windows/Fonts/kaiu.ttf",       # 標楷體
+            "C:/Windows/Fonts/mingliu.ttc",    # 細明體
+            "/System/Library/Fonts/PingFang.ttc",  # Mac 蘋方體
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # Linux
+        ]
+        
+        for font_path in chinese_fonts:
+            try:
+                font_title = ImageFont.truetype(font_path, 85)  # 放大到 85px
+                font_footer = ImageFont.truetype(font_path, 40)
+                break
+            except:
+                continue
+        
+        # 如果沒有找到中文字體，使用預設字體
+        if not font_title:
+            font_title = ImageFont.load_default()
+            font_footer = ImageFont.load_default()
+        
+        # 為 LOGO 和頂部文字載入更大的字體
+        font_logo = None
+        try:
+            for font_path in chinese_fonts:
+                try:
+                    font_logo = ImageFont.truetype(font_path, 50)
+                    break
+                except:
+                    continue
+        except:
+            pass
+        
+        if not font_logo:
+            font_logo = font_title
+        
+        # 繪製頂部 LOGO 文字
+        logo_text = "艾迪醫師談"
+        text_color = (40, 40, 40)  # 深灰色文字
+        
+        try:
+            bbox = d.textbbox((0, 0), logo_text, font=font_logo)
+            logo_width = bbox[2] - bbox[0]
+        except:
+            logo_width = len(logo_text) * 25
+        
+        logo_x = (1080 - logo_width) // 2
+        logo_y = 40
+        d.text((logo_x, logo_y), logo_text, fill=text_color, font=font_logo)
+        
+        # 使用短標題或從 text 中提取
+        if image_title:
+            title_text = image_title
+        else:
+            title_text = text.replace("🔗 新聞全文：", "").split("http")[0].strip()
+        
+        # 標題文字智慧換行處理：優先在標點符號（，、：、；）處換行
+        # 每行最多15個字（考慮 85px 大字體）
+        lines = []
+        current_line = ""
+        punctuation_marks = ["，", "：", "；", ",", ":", ";"]
+        
+        i = 0
+        while i < len(title_text):
+            char = title_text[i]
+            
+            # 遇到換行符
+            if char == '\n':
+                if current_line:
+                    lines.append(current_line)
+                current_line = ""
+                i += 1
+                continue
+            
+            current_line += char
+            
+            # 優先在標點符號處換行
+            if char in punctuation_marks:
+                lines.append(current_line)
+                current_line = ""
+                i += 1
+                continue
+            
+            # 如果行長達到限制則換行
+            if len(current_line) >= 15:
+                lines.append(current_line)
+                current_line = ""
+            
+            i += 1
+        
+        # 添加剩餘文字
+        if current_line:
+            lines.append(current_line)
+        
+        # 計算總高度以垂直置中（考慮頂部 LOGO 和更大字體）
+        line_height = 100  # 增加行間距以適應更大的字體
+        total_height = len(lines) * line_height
+        # 將標題往下移，給 LOGO 留出空間
+        start_y = (1080 - total_height) // 2 - 50
+        
+        # 繪製標題文字 (置中對齊)
+        for i, line in enumerate(lines[:8]):  # 最多8行
+            # 計算文字寬度以水平置中
+            try:
+                bbox = d.textbbox((0, 0), line.strip(), font=font_title)
+                text_width = bbox[2] - bbox[0]
+            except:
+                text_width = len(line.strip()) * 30
+            
+            x = (1080 - text_width) // 2
+            y = start_y + i * line_height
+            d.text((x, y), line.strip(), fill=text_color, font=font_title)
+        
+        # 底部提示文字
+        footer_text = "查看文章底下連結了解更多"
+        try:
+            bbox = d.textbbox((0, 0), footer_text, font=font_footer)
+            footer_width = bbox[2] - bbox[0]
+        except:
+            footer_width = len(footer_text) * 20
+        
+        footer_x = (1080 - footer_width) // 2
+        footer_y = 950
+        d.text((footer_x, footer_y), footer_text, fill=text_color, font=font_footer)
+        
+        # 保存臨時圖片
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            img.save(tmp.name, "JPEG", quality=95)
+            tmp_path = tmp.name
+        
+        # 準備 Instagram 貼文內容
+        # 如果 text 已經包含連結，則不再添加
+        caption = text
+        
+        # 添加標籤
+        if hashtags:
+            caption = f"{caption}\n\n{hashtags}"
+        else:
+            caption = f"{caption}\n\n#新聞 #健康 #醫療"
+        
+        # 發布到 Instagram
+        ig_client.photo_upload(tmp_path, caption)
+        print("✅ 已發布到 Instagram")
+        
+        # 刪除臨時文件
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"❌ Instagram 發文錯誤: {e}")
+
 def post_to_facebook_with_link(text: str, news_url: str):
     """
     使用 Graph API 的 feed endpoint 加上 link 參數，讓 FB 嘗試自動產生連結預覽（og:image）
     如果失敗則退回純文字+連結。
     """
+    if not POST_TO_FACEBOOK or not graph:
+        return
     try:
         graph.put_object(
             parent_object='me',
@@ -136,12 +463,33 @@ def post_to_facebook_with_link(text: str, news_url: str):
         print("⚠️ FB 無法產生預覽卡片或發文失敗，改用純文字發文:", e)
         post_to_facebook(f"{text}\n\n🔗 {news_url}")
 
+def post_to_all_platforms(text, image_title=None, news_url=None, hashtags=None):
+    """發布到所有啟用的平台
+    
+    Args:
+        text: 貼文內文
+        image_title: Instagram 圖片上顯示的短標題
+        news_url: 新聞連結
+        hashtags: Instagram 使用的標籤
+    """
+    if POST_TO_FACEBOOK:
+        if news_url:
+            post_to_facebook_with_link(text, news_url)
+        else:
+            post_to_facebook(text)
+    
+    if POST_TO_INSTAGRAM:
+        post_to_instagram(text, image_title, news_url, hashtags)
+
 # ================== 三種模式 =================
 async def text_auto_post():
+    """純文字模式：根據醫療主題生成內容並發布"""
     while True:
-        content = await text_api(prompt)
+        # 生成醫療相關內容
+        topic = "請生成一則關於健康或醫療的簡短建議"
+        content = await text_api(topic)
         print("\n生成內容:", content)
-        post_to_facebook(content)
+        post_to_all_platforms(content)
         delay = compute_delay()
         print(f"⏱ 下次發文: {delay:.1f} 秒後")
         await asyncio.sleep(delay)
@@ -170,12 +518,20 @@ async def setn_auto_post(url):
         # 抓文章內容
         news = await getnews(news_url)
 
-        # GPT 生成貼文文字
-        text = await text_api(" ".join(news))
-        final_msg = f"{text}\n\n🔗 新聞全文：{news_url}"
+        # GPT 生成短標題和貼文文字
+        title, text = await text_api_with_title(" ".join(news))
+        print(f"\n生成標題: {title}")
+        print(f"生成內容: {text}")
+        
+        # 生成相關標籤
+        hashtags = await generate_hashtags(" ".join(news))
+        print(f"生成標籤: {hashtags}")
+        
+        # 內文已包含連結，不需要再添加
+        final_msg = f"{text}\n\n🔗 新聞連結：{news_url}"
 
-        # 優先使用 FB 的 link preview 功能（Graph API 的 feed + link）
-        post_to_facebook_with_link(final_msg, news_url)
+        # 發布到所有啟用的平台（圖片使用短標題）
+        post_to_all_platforms(final_msg, image_title=title, news_url=news_url, hashtags=hashtags)
 
         with open("cache.txt", "w", encoding="utf-8") as f:
             f.write(news_url)
@@ -189,13 +545,29 @@ async def manual():
     msg = input("輸入主題或網址：")
     if re.match(r'https?://', msg):
         news = await getnews(msg)
-        content = await text_api(" ".join(news))
-        content += f"\n\n{msg}"
+        title, content = await text_api_with_title(" ".join(news))
+        print(f"\n生成標題: {title}")
+        print(f"生成內容: {content}")
+        
+        # 生成標籤
+        hashtags = await generate_hashtags(" ".join(news))
+        print(f"生成標籤: {hashtags}")
+        
+        content = f"{content}\n\n🔗 新聞連結：{msg}"
+        news_url = msg
     else:
-        content = await text_api(msg)
-    print("\n生成內容:", content)
+        title, content = await text_api_with_title(msg)
+        print(f"\n生成標題: {title}")
+        print(f"生成內容: {content}")
+        
+        # 生成標籤
+        hashtags = await generate_hashtags(msg)
+        print(f"生成標籤: {hashtags}")
+        
+        news_url = None
+        
     if input("要發佈嗎？(y/n): ").lower() == "y":
-        post_to_facebook(content)
+        post_to_all_platforms(content, image_title=title, news_url=news_url)
     await manual()
 
 # ================== 啟動 ===================
