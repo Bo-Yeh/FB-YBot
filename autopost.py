@@ -7,7 +7,7 @@ import json
 import re
 import os
 import sys
-from spider import getnews, setn_fetch_url, fetch_news_preview, fetch_news_url, fetch_news_from_multiple_sources, NEWS_SOURCES
+from spider import getnews, setn_fetch_url, fetch_news_preview
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired
 
@@ -665,9 +665,7 @@ async def text_auto_post():
 async def setn_auto_post(url):
     first = True
     while True:
-        news_url, source_name = await fetch_news_from_multiple_sources()
-        print(f"從 {source_name} 抓取: {news_url}")
-        
+        news_url = await setn_fetch_url(url)
         if not news_url:
             print("抓取新聞失敗，30秒後重試")
             await asyncio.sleep(30)
