@@ -61,6 +61,10 @@ export API_KEY="your_openai_api_key"
 export FB_TOKEN="your_facebook_access_token"
 export IG_USERNAME="your_instagram_username"
 export IG_PASSWORD="your_instagram_password"
+export IG_SESSIONID="your_verified_sessionid"   # 可選：以已驗證的 sessionid 直接登入
+export IG_SETTINGS_PATH="downloads/instagrapi_settings.json"  # 可選：settings 檔案路徑（預設）
+export IG_SETTINGS_JSON='{ "some": "json" }'  # 可選：settings JSON 內容（雲端貼上）
+export IG_PROXY="http://user:pass@host:port"    # 可選：HTTP/HTTPS 代理
 export POST_TO_FACEBOOK="true"
 export POST_TO_INSTAGRAM="true"
 ```
@@ -113,6 +117,57 @@ python autopost.py
 1. 將程式碼推送到 Git 儲存庫
 2. 在平台設定環境變數
 3. 平台會自動使用 `Procfile` 啟動程式
+
+### Instagram 在雲端的穩定登入策略
+- ✅ **優先使用已驗證的 `IG_SESSIONID`**：在本機完成一次登入與驗證後，擷取 sessionid 並設定到環境變數，雲端可直接使用。
+- ✅ **載入既有 settings**：提供 `IG_SETTINGS_JSON`（直接貼 JSON 內容）或 `IG_SETTINGS_PATH`（檔案路徑，預設為 `downloads/instagrapi_settings.json`）。程式啟動時會先載入，並在成功登入後自動 `dump_settings` 以利後續重用。
+- ✅ **代理（選用）**：若雲端 IP 經常被挑戰，可設定 `IG_PROXY` 使用固定出口。
+
+> 提示：Railway 的檔案系統可能不是持久化的，若無法保留 settings 檔，建議改用 `IG_SETTINGS_JSON` 直接以環境變數提供設定內容。
+
+### 同步環境變數到 Railway（安全）
+- 不要在 GitHub 提交真實機密（`config.json`、`.env`、`downloads/instagrapi_settings.json` 都已在 `.gitignore` 中）。
+- 提交 `.env.example` 作為模板，實際值改用 Railway 變數設定。
+
+#### 方法一：使用 sessionid（推薦）
+最簡單穩定的方式，只需提供一個 sessionid 字串：
+
+```powershell
+# 1. 在本機完成一次 IG 登入
+python autopost.py
+
+# 2. 提取 sessionid
+pwsh -File scripts/extract_sessionid.ps1
+
+# 3. 複製輸出的指令到 Railway 執行
+railway variables set IG_SESSIONID "你的sessionid"
+```
+
+#### 方法二：批次設定所有變數
+使用內建腳本產生所有 Railway 變數設定指令：
+
+```powershell
+# 在專案根目錄執行（Windows PowerShell）
+pwsh -File scripts/export_to_railway.ps1
+
+# 事前準備（安裝 Railway CLI 並連線）
+npm i -g @railway/cli
+railway login
+railway link
+```
+
+- 將腳本輸出的 `railway variables set ...` 指令逐行執行，即可把本機的設定（OpenAI、Facebook、Instagram、App 參數）安全地同步到 Railway。
+
+#### 常見問題
+**Q: Railway 顯示 JSON 格式錯誤？**
+- 不要使用 `IG_SETTINGS_JSON`，改用 `IG_SESSIONID`（更簡單）。
+
+**Q: Railway 登入失敗提示 IP 被封？**
+- 在本機完成登入與驗證，提取 `IG_SESSIONID` 供 Railway 使用。
+- 可選：設定 `IG_PROXY` 使用代理伺服器。
+
+**Q: sessionid 會過期嗎？**
+- 會，但通常可用數週至數月。過期後重新在本機登入並提取新 sessionid 即可。
 
 ## 授權
 此專案僅供學習參考使用。

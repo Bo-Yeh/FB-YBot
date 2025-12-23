@@ -372,6 +372,50 @@ def post_to_facebook(text):
     except Exception as e:
         print("❌ Facebook 發文錯誤:", e)
 
+def get_chinese_font(size):
+    """取得繁體中文字體，支援 Windows、Mac、Linux/Railway
+    若 Linux 無字體則自動下載 Noto Sans TC
+    """
+    # 常見系統字體路徑
+    font_paths = [
+        "C:/Windows/Fonts/msjh.ttc",      # 微軟正黑體
+        "C:/Windows/Fonts/kaiu.ttf",       # 標楷體
+        "C:/Windows/Fonts/mingliu.ttc",    # 細明體
+        "/System/Library/Fonts/PingFang.ttc",  # Mac 蘋方體
+        "/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf",  # Linux Noto Sans TC
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux Noto Sans CJK
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",  # Android Droid
+        "fonts/NotoSansTC-Regular.ttf",  # 專案內建字體
+    ]
+    
+    # 嘗試系統字體
+    for font_path in font_paths:
+        try:
+            from PIL import ImageFont
+            return ImageFont.truetype(font_path, size)
+        except:
+            continue
+    
+    # Railway/Linux 環境：下載 Noto Sans TC
+    try:
+        import urllib.request
+        fonts_dir = "fonts"
+        os.makedirs(fonts_dir, exist_ok=True)
+        font_file = os.path.join(fonts_dir, "NotoSansTC-Regular.ttf")
+        
+        if not os.path.exists(font_file):
+            print("⬇️ 下載繁體中文字體 Noto Sans TC...")
+            font_url = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
+            urllib.request.urlretrieve(font_url, font_file)
+            print(f"✅ 字體已下載至: {font_file}")
+        
+        from PIL import ImageFont
+        return ImageFont.truetype(font_file, size)
+    except Exception as e:
+        print(f"⚠️ 無法載入中文字體: {e}")
+        from PIL import ImageFont
+        return ImageFont.load_default()
+
 def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
     """發布貼文到 Instagram，生成隨機淺色背景圖片，標題置中，底部提示查看連結
     
@@ -397,46 +441,10 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
         img = Image.new('RGB', (1080, 1080), color=bg_color)
         d = ImageDraw.Draw(img)
         
-        # 載入繁體中文字體
-        font_title = None
-        font_footer = None
-        
-        # 嘗試載入常見的中文字體
-        chinese_fonts = [
-            "C:/Windows/Fonts/msjh.ttc",      # 微軟正黑體
-            "C:/Windows/Fonts/kaiu.ttf",       # 標楷體
-            "C:/Windows/Fonts/mingliu.ttc",    # 細明體
-            "/System/Library/Fonts/PingFang.ttc",  # Mac 蘋方體
-            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"  # Linux
-        ]
-        
-        for font_path in chinese_fonts:
-            try:
-                font_title = ImageFont.truetype(font_path, 85)  # 放大到 85px
-                font_footer = ImageFont.truetype(font_path, 40)
-                break
-            except:
-                continue
-        
-        # 如果沒有找到中文字體，使用預設字體
-        if not font_title:
-            font_title = ImageFont.load_default()
-            font_footer = ImageFont.load_default()
-        
-        # 為 LOGO 和頂部文字載入更大的字體
-        font_logo = None
-        try:
-            for font_path in chinese_fonts:
-                try:
-                    font_logo = ImageFont.truetype(font_path, 50)
-                    break
-                except:
-                    continue
-        except:
-            pass
-        
-        if not font_logo:
-            font_logo = font_title
+        # 載入繁體中文字體（跨平台支援）
+        font_title = get_chinese_font(85)
+        font_footer = get_chinese_font(40)
+        font_logo = get_chinese_font(50)
         
         # 繪製頂部 LOGO 文字
         logo_text = "艾迪醫師談"

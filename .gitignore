@@ -35,6 +35,10 @@ Env
 config.json
 downloads/
 
+# Allow fonts directory for Railway deployment
+!fonts/
+fonts/*.ttf
+
 config.json
 .vs/
 *.pyc
