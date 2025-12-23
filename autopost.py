@@ -22,6 +22,10 @@ def load_config():
     POST_DELAY_MAX = os.getenv("POST_DELAY_MAX")
     IG_USERNAME = os.getenv("IG_USERNAME")
     IG_PASSWORD = os.getenv("IG_PASSWORD")
+    IG_SESSIONID = os.getenv("IG_SESSIONID")
+    IG_SETTINGS_PATH = os.getenv("IG_SETTINGS_PATH")
+    IG_SETTINGS_JSON = os.getenv("IG_SETTINGS_JSON")
+    IG_PROXY = os.getenv("IG_PROXY")
     POST_TO_FACEBOOK = os.getenv("POST_TO_FACEBOOK")
     POST_TO_INSTAGRAM = os.getenv("POST_TO_INSTAGRAM")
 
@@ -38,6 +42,11 @@ def load_config():
             POST_DELAY_MAX = POST_DELAY_MAX or data.get("POST_DELAY_MAX")
             IG_USERNAME = IG_USERNAME or data.get("IG_USERNAME")
             IG_PASSWORD = IG_PASSWORD or data.get("IG_PASSWORD")
+            # 這些可選項通常在雲端以環境變數提供，若存在於 config.json 也允許讀取
+            IG_SESSIONID = IG_SESSIONID or data.get("IG_SESSIONID")
+            IG_SETTINGS_PATH = IG_SETTINGS_PATH or data.get("IG_SETTINGS_PATH")
+            IG_SETTINGS_JSON = IG_SETTINGS_JSON or data.get("IG_SETTINGS_JSON")
+            IG_PROXY = IG_PROXY or data.get("IG_PROXY")
             POST_TO_FACEBOOK = POST_TO_FACEBOOK if POST_TO_FACEBOOK is not None else data.get("POST_TO_FACEBOOK")
             POST_TO_INSTAGRAM = POST_TO_INSTAGRAM if POST_TO_INSTAGRAM is not None else data.get("POST_TO_INSTAGRAM")
         except FileNotFoundError:
@@ -67,9 +76,24 @@ def load_config():
     POST_TO_FACEBOOK = POST_TO_FACEBOOK if POST_TO_FACEBOOK is not None else True
     POST_TO_INSTAGRAM = POST_TO_INSTAGRAM if POST_TO_INSTAGRAM is not None else False
 
-    return API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, POST_TO_FACEBOOK, POST_TO_INSTAGRAM
+    return (
+        API_KEY,
+        FB_TOKEN,
+        NEWS,
+        MODE,
+        POST_DELAY_MIN,
+        POST_DELAY_MAX,
+        IG_USERNAME,
+        IG_PASSWORD,
+        IG_SESSIONID,
+        IG_SETTINGS_PATH,
+        IG_SETTINGS_JSON,
+        IG_PROXY,
+        POST_TO_FACEBOOK,
+        POST_TO_INSTAGRAM,
+    )
 
-API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, POST_TO_FACEBOOK, POST_TO_INSTAGRAM = load_config()
+API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, IG_SESSIONID, IG_SETTINGS_PATH, IG_SETTINGS_JSON, IG_PROXY, POST_TO_FACEBOOK, POST_TO_INSTAGRAM = load_config()
 
 # 檢查必要變數
 missing = []
@@ -90,15 +114,77 @@ if POST_TO_FACEBOOK:
 else:
     graph = None
 
-# init Instagram client
+# init Instagram client（優先使用既有 session / settings 以降低雲端登入驗證）
 ig_client = None
-if POST_TO_INSTAGRAM and IG_USERNAME and IG_PASSWORD:
+if POST_TO_INSTAGRAM and IG_USERNAME:
     try:
-        ig_client = Client()
-        ig_client.login(IG_USERNAME, IG_PASSWORD)
-        print("✅ Instagram 登入成功")
+        c = Client()
+
+        # 設定 Proxy（可選）
+        if IG_PROXY:
+            try:
+                c.set_proxy(IG_PROXY)
+                print("🔌 已設定 IG Proxy")
+            except Exception as e:
+                print(f"⚠️ 設定 Proxy 失敗: {e}")
+
+        # 既有設定檔的儲存位置（預設到 downloads/ 方便持久化）
+        settings_dump_path = IG_SETTINGS_PATH or os.path.join("downloads", "instagrapi_settings.json")
+        try:
+            os.makedirs(os.path.dirname(settings_dump_path), exist_ok=True)
+        except Exception:
+            pass
+
+        # 1) 先嘗試使用 sessionid 直接登入（最穩定）
+        if not ig_client and IG_SESSIONID:
+            try:
+                c.login_by_sessionid(IG_SESSIONID)
+                ig_client = c
+                print("✅ Instagram 透過 sessionid 登入成功")
+                try:
+                    c.dump_settings(settings_dump_path)
+                except Exception as e:
+                    print(f"⚠️ 儲存 IG 設定失敗: {e}")
+            except Exception as e:
+                print(f"⚠️ sessionid 登入失敗: {e}")
+
+        # 2) 若未登入，嘗試載入既有 settings（JSON 或檔案路徑）
+        if not ig_client:
+            settings_loaded = False
+            if IG_SETTINGS_JSON:
+                try:
+                    settings = json.loads(IG_SETTINGS_JSON)
+                    c.set_settings(settings)
+                    settings_loaded = True
+                    print("✅ 已載入 IG 設定 (JSON)")
+                except Exception as e:
+                    print(f"⚠️ 載入 IG 設定(JSON)失敗: {e}")
+            elif settings_dump_path and os.path.exists(settings_dump_path):
+                try:
+                    c.load_settings(settings_dump_path)
+                    settings_loaded = True
+                    print(f"✅ 已載入 IG 設定檔: {settings_dump_path}")
+                except Exception as e:
+                    print(f"⚠️ 載入 IG 設定檔失敗: {e}")
+
+            # 3) 使用帳密登入（若提供），重用已載入的裝置指紋與設定以降低挑戰機率
+            if IG_PASSWORD:
+                try:
+                    c.login(IG_USERNAME, IG_PASSWORD)
+                    ig_client = c
+                    print("✅ Instagram 登入成功")
+                    try:
+                        c.dump_settings(settings_dump_path)
+                    except Exception as e:
+                        print(f"⚠️ 儲存 IG 設定失敗: {e}")
+                except Exception as e:
+                    print(f"⚠️ Instagram 登入失敗: {e}")
+                    ig_client = None
+            else:
+                print("⚠️ 未提供 IG_PASSWORD，無法進行帳密登入")
+
     except Exception as e:
-        print(f"⚠️ Instagram 登入失敗: {e}")
+        print(f"⚠️ 初始化 Instagram 客戶端失敗: {e}")
         ig_client = None
 
 # 延遲時間
