@@ -153,10 +153,19 @@ if POST_TO_INSTAGRAM and IG_USERNAME:
             settings_loaded = False
             if IG_SETTINGS_JSON:
                 try:
-                    settings = json.loads(IG_SETTINGS_JSON)
+                    # Railway 環境變數可能有單引號包裹或轉義問題，先清理
+                    cleaned_json = IG_SETTINGS_JSON.strip()
+                    # 移除可能的外層單引號
+                    if cleaned_json.startswith("'") and cleaned_json.endswith("'"):
+                        cleaned_json = cleaned_json[1:-1]
+                    # 嘗試解析
+                    settings = json.loads(cleaned_json)
                     c.set_settings(settings)
                     settings_loaded = True
                     print("✅ 已載入 IG 設定 (JSON)")
+                except json.JSONDecodeError as e:
+                    print(f"⚠️ IG_SETTINGS_JSON 格式錯誤: {e}")
+                    print(f"提示：請確認 Railway 變數中的 JSON 格式正確，建議改用 IG_SESSIONID")
                 except Exception as e:
                     print(f"⚠️ 載入 IG 設定(JSON)失敗: {e}")
             elif settings_dump_path and os.path.exists(settings_dump_path):
@@ -175,13 +184,29 @@ if POST_TO_INSTAGRAM and IG_USERNAME:
                     print("✅ Instagram 登入成功")
                     try:
                         c.dump_settings(settings_dump_path)
+                        print(f"✅ 已儲存 IG 設定至: {settings_dump_path}")
+                        
+                        # 提取 sessionid 供後續使用
+                        try:
+                            settings = c.get_settings()
+                            sessionid = settings.get("authorization_data", {}).get("sessionid")
+                            if sessionid:
+                                print(f"\n💡 建議：將以下 sessionid 設定到 Railway 的 IG_SESSIONID 變數：")
+                                print(f"   {sessionid}\n")
+                        except Exception:
+                            pass
                     except Exception as e:
                         print(f"⚠️ 儲存 IG 設定失敗: {e}")
                 except Exception as e:
                     print(f"⚠️ Instagram 登入失敗: {e}")
+                    print("建議解決方案：")
+                    print("1. 在本機完成登入後，從 downloads/instagrapi_settings.json 取得 sessionid")
+                    print("2. 在 Railway 設定 IG_SESSIONID 變數（而非完整 JSON）")
+                    print("3. 若持續失敗，設定 IG_PROXY 使用代理伺服器")
                     ig_client = None
             else:
                 print("⚠️ 未提供 IG_PASSWORD，無法進行帳密登入")
+                print("建議：在 Railway 設定 IG_SESSIONID 或 IG_SETTINGS_JSON")
 
     except Exception as e:
         print(f"⚠️ 初始化 Instagram 客戶端失敗: {e}")
