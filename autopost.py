@@ -7,7 +7,7 @@ import json
 import re
 import os
 import sys
-from spider import getnews, setn_fetch_url, fetch_news_preview
+from spider import getnews, setn_fetch_url, fetch_news_preview, fetch_news_url, fetch_news_from_multiple_sources, NEWS_SOURCES
 from instagrapi import Client
 from instagrapi.exceptions import LoginRequired
 
