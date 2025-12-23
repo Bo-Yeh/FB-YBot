@@ -482,7 +482,7 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
         font_logo = get_chinese_font(50)
         
         # 繪製頂部 LOGO 文字
-        logo_text = "艾迪醫師談"
+        logo_text = "陳醫師談"
         text_color = (40, 40, 40)  # 深灰色文字
         
         try:
@@ -506,38 +506,52 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
         lines = []
         current_line = ""
         punctuation_marks = ["，", "：", "；", ",", ":", ";"]
-        
+        remove_before_break = ["，", "、", ","]
+
         i = 0
         while i < len(title_text):
             char = title_text[i]
-            
+
             # 遇到換行符
             if char == '\n':
                 if current_line:
+                    # 換行前刪除指定標點
+                    if current_line and current_line[-1] in remove_before_break:
+                        current_line = current_line[:-1]
                     lines.append(current_line)
                 current_line = ""
                 i += 1
                 continue
-            
+
             current_line += char
-            
+
             # 優先在標點符號處換行
             if char in punctuation_marks:
+                # 換行前刪除指定標點
+                if current_line and current_line[-1] in remove_before_break:
+                    current_line = current_line[:-1]
                 lines.append(current_line)
                 current_line = ""
                 i += 1
                 continue
-            
+
             # 如果行長達到限制則換行
-            if len(current_line) >= 15:
+            if len(current_line) >= 13:
+                # 換行前刪除指定標點
+                if current_line and current_line[-1] in remove_before_break:
+                    current_line = current_line[:-1]
                 lines.append(current_line)
                 current_line = ""
-            
+
             i += 1
-        
+
         # 添加剩餘文字
         if current_line:
+            # 換行前刪除指定標點
+            if current_line and current_line[-1] in remove_before_break:
+                current_line = current_line[:-1]
             lines.append(current_line)
+
         
         # 計算總高度以垂直置中（考慮頂部 LOGO 和更大字體）
         line_height = 100  # 增加行間距以適應更大的字體
