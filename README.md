@@ -118,6 +118,11 @@ python autopost.py
 2. 在平台設定環境變數
 3. 平台會自動使用 `Procfile` 啟動程式
 
+**Railway 自動安裝繁體中文字體**
+- 專案已包含 `Aptfile` 與 `nixpacks.toml`
+- Railway 部署時會自動安裝 Noto Sans CJK 字體
+- 無需手動設定，Instagram 圖片將正確顯示繁體中文
+
 ### Instagram 在雲端的穩定登入策略
 - ✅ **優先使用已驗證的 `IG_SESSIONID`**：在本機完成一次登入與驗證後，擷取 sessionid 並設定到環境變數，雲端可直接使用。
 - ✅ **載入既有 settings**：提供 `IG_SETTINGS_JSON`（直接貼 JSON 內容）或 `IG_SETTINGS_PATH`（檔案路徑，預設為 `downloads/instagrapi_settings.json`）。程式啟動時會先載入，並在成功登入後自動 `dump_settings` 以利後續重用。

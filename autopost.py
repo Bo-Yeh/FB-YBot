@@ -374,29 +374,35 @@ def post_to_facebook(text):
 
 def get_chinese_font(size):
     """取得繁體中文字體，支援 Windows、Mac、Linux/Railway
-    若 Linux 無字體則自動下載 Noto Sans TC
+    優先使用系統字體，若無則自動下載 Noto Sans TC
     """
-    # 常見系統字體路徑
+    # 常見系統字體路徑（Railway Aptfile 安裝後的路徑在前）
     font_paths = [
+        # Railway/Ubuntu 透過 Aptfile 安裝的 Noto CJK
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto-cjk/NotoSansTC-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf",
+        # Windows
         "C:/Windows/Fonts/msjh.ttc",      # 微軟正黑體
         "C:/Windows/Fonts/kaiu.ttf",       # 標楷體
         "C:/Windows/Fonts/mingliu.ttc",    # 細明體
+        # Mac
         "/System/Library/Fonts/PingFang.ttc",  # Mac 蘋方體
-        "/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf",  # Linux Noto Sans TC
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",  # Linux Noto Sans CJK
-        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",  # Android Droid
-        "fonts/NotoSansTC-Regular.ttf",  # 專案內建字體
+        # 專案內建字體
+        "fonts/NotoSansTC-Regular.ttf",
+        "fonts/NotoSansTC-Regular.otf",
     ]
     
     # 嘗試系統字體
     for font_path in font_paths:
         try:
             from PIL import ImageFont
-            return ImageFont.truetype(font_path, size)
+            font = ImageFont.truetype(font_path, size)
+            return font
         except:
             continue
     
-    # Railway/Linux 環境：下載 Noto Sans TC
+    # Railway/Linux 環境：下載 Noto Sans TC（多重備援）
     try:
         import urllib.request
         fonts_dir = "fonts"
@@ -405,14 +411,43 @@ def get_chinese_font(size):
         
         if not os.path.exists(font_file):
             print("⬇️ 下載繁體中文字體 Noto Sans TC...")
-            font_url = "https://github.com/google/fonts/raw/main/ofl/notosanstc/NotoSansTC-Regular.ttf"
-            urllib.request.urlretrieve(font_url, font_file)
-            print(f"✅ 字體已下載至: {font_file}")
+            
+            # 多重下載來源（按優先順序嘗試）
+            font_urls = [
+                # Google Fonts CDN (最穩定)
+                "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanstc/NotoSansTC%5Bwght%5D.ttf",
+                # GitHub Noto CJK 倉庫
+                "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf",
+                # jsDelivr CDN 備援
+                "https://cdn.jsdelivr.net/gh/notofonts/noto-cjk/Sans/OTF/TraditionalChinese/NotoSansTC-Regular.otf",
+            ]
+            
+            downloaded = False
+            for url in font_urls:
+                try:
+                    print(f"  嘗試來源: {url[:50]}...")
+                    urllib.request.urlretrieve(url, font_file)
+                    # 驗證檔案大小（避免下載到錯誤頁面）
+                    if os.path.getsize(font_file) > 100000:  # 至少 100KB
+                        print(f"✅ 字體已下載至: {font_file}")
+                        downloaded = True
+                        break
+                    else:
+                        os.remove(font_file)
+                except Exception as e:
+                    print(f"  ⚠️ 此來源失敗: {e}")
+                    if os.path.exists(font_file):
+                        os.remove(font_file)
+                    continue
+            
+            if not downloaded:
+                raise Exception("所有字體下載來源均失敗")
         
         from PIL import ImageFont
         return ImageFont.truetype(font_file, size)
     except Exception as e:
         print(f"⚠️ 無法載入中文字體: {e}")
+        print("建議：請在 Railway 手動設定 apt buildpack 安裝 fonts-noto-cjk")
         from PIL import ImageFont
         return ImageFont.load_default()
 
