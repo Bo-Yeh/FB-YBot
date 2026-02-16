@@ -896,8 +896,16 @@ async def setn_auto_post(url):
         # 抓文章內容
         news = await getnews(news_url)
 
-        # GPT 生成短標題和貼文文字
-        title, text = await text_api_with_title(" ".join(news))
+        # GPT 生成短標題和貼文文字（使用 text_api）
+        text = await text_api(" ".join(news))
+        # 若 text 包含 "標題：" 前綴，則提取之作為 title
+        if text.startswith("標題："):
+            parts = text.split("\n", 1)
+            title = parts[0].replace("標題：", "").strip()
+            text = parts[1].strip() if len(parts) > 1 else text
+        else:
+            # 否則取前 15 字作為標題，剩餘為內文
+            title = text[:15] + "..." if len(text) > 15 else text
         print(f"\n生成標題: {title}")
         print(f"生成內容: {text}")
         
