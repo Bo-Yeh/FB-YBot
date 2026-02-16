@@ -3,6 +3,7 @@ import facebook
 import openai
 import asyncio
 import random
+import time
 import json
 import re
 import os
@@ -211,6 +212,118 @@ if POST_TO_INSTAGRAM and IG_USERNAME:
     except Exception as e:
         print(f"⚠️ 初始化 Instagram 客戶端失敗: {e}")
         ig_client = None
+
+# 驗證並確保 IG 已登入（避免 403 login_required）
+def ensure_ig_authenticated() -> bool:
+    """
+    檢查並確保 ig_client 處於已登入狀態；必要時重試登入。
+    回傳 True 表示可進行上傳；False 表示登入維持失敗。
+    """
+    global ig_client
+    if not POST_TO_INSTAGRAM or not ig_client:
+        return False
+
+    def _is_logged_in() -> bool:
+        """以輕量方式驗證登入：嘗試讀取目前帳號資料或檢查 sessionid。"""
+        try:
+            if IG_USERNAME:
+                # 若未登入會拋 LoginRequired
+                ig_client.user_info_by_username(IG_USERNAME)
+                return True
+            # 沒提供使用者名稱時，以是否存在有效 sessionid 作為弱驗證
+            return bool(getattr(ig_client, "sessionid", None))
+        except LoginRequired:
+            return False
+        except Exception:
+            # 保守回傳 False 以觸發重登入
+            return False
+
+    try:
+        # 先嘗試現況
+        if _is_logged_in():
+            return True
+
+        # 嘗試載入 settings（僅接受 instagrapi 產生過的結構，避免異常 key 如 pinned_channels_info）
+        try:
+            # 優先 JSON 變數
+            if IG_SETTINGS_JSON:
+                cleaned_json = IG_SETTINGS_JSON.strip()
+                if cleaned_json.startswith("'") and cleaned_json.endswith("'"):
+                    cleaned_json = cleaned_json[1:-1]
+                settings = json.loads(cleaned_json)
+                if isinstance(settings, dict) and (
+                    "authorization_data" in settings and "device_settings" in settings
+                ):
+                    ig_client.set_settings(settings)
+                else:
+                    # 不是 instagrapi 的設定格式就忽略
+                    pass
+            else:
+                settings_path = IG_SETTINGS_PATH or os.path.join("downloads", "instagrapi_settings.json")
+                if os.path.exists(settings_path):
+                    ig_client.load_settings(settings_path)
+        except Exception:
+            # 設定載入失敗不影響後續登入嘗試
+            pass
+
+        # 以 sessionid 重新登入（環境變數或從 settings 中提取）
+        sessionid = None
+        if IG_SESSIONID:
+            sessionid = IG_SESSIONID
+        else:
+            # 從 JSON 設定或檔案提取 sessionid
+            try:
+                if IG_SETTINGS_JSON:
+                    sj = json.loads(IG_SETTINGS_JSON.strip().strip("'"))
+                    sessionid = sj.get("authorization_data", {}).get("sessionid")
+                if not sessionid:
+                    settings_path = IG_SETTINGS_PATH or os.path.join("downloads", "instagrapi_settings.json")
+                    if os.path.exists(settings_path):
+                        with open(settings_path, "r", encoding="utf-8") as f:
+                            s = json.load(f)
+                        sessionid = s.get("authorization_data", {}).get("sessionid")
+            except Exception:
+                sessionid = None
+
+        if sessionid:
+            try:
+                ig_client.login_by_sessionid(sessionid)
+                if _is_logged_in():
+                    return True
+            except Exception as e:
+                print(f"⚠️ 透過 sessionid 重新登入失敗: {e}")
+
+        # 帳密登入（若提供）
+        if IG_USERNAME and IG_PASSWORD:
+            try:
+                ig_client.login(IG_USERNAME, IG_PASSWORD)
+                if _is_logged_in():
+                    # 成功後儲存設定並提示 sessionid
+                    try:
+                        settings_dump_path = os.path.join("downloads", "instagrapi_settings.json")
+                        os.makedirs(os.path.dirname(settings_dump_path), exist_ok=True)
+                        ig_client.dump_settings(settings_dump_path)
+                        # 顯示 sessionid 便於雲端使用
+                        try:
+                            settings = ig_client.get_settings()
+                            sid = settings.get("authorization_data", {}).get("sessionid")
+                            if sid:
+                                print("\n💡 建議：將以下 sessionid 設定到 Railway 的 IG_SESSIONID 變數：")
+                                print(f"   {sid}\n")
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                    return True
+            except Exception as e:
+                print(f"❌ 帳密登入失敗: {e}")
+                return False
+
+        print("⚠️ 無法驗證 IG 登入狀態（缺少可用的 sessionid 或密碼）")
+        return False
+    except Exception as e:
+        print(f"⚠️ 檢查 IG 登入狀態失敗: {e}")
+        return False
 
 # 延遲時間
 def compute_delay():
@@ -463,6 +576,10 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
     if not POST_TO_INSTAGRAM or not ig_client:
         return
     try:
+        # 上傳前先確認登入狀態，避免 403 login_required
+        if not ensure_ig_authenticated():
+            print("❌ IG 未登入，跳過 Instagram 發文")
+            return
         from PIL import Image, ImageDraw, ImageFont
         import tempfile
         
@@ -600,8 +717,56 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
             caption = f"{caption}\n\n#新聞 #健康 #醫療"
         
         # 發布到 Instagram
-        ig_client.photo_upload(tmp_path, caption)
-        print("✅ 已發布到 Instagram")
+        # 1) 上傳前先確保 session 有效並做暖機/模擬讀取行為
+        try:
+            if not ensure_ig_authenticated():
+                print("⚠️ IG 未驗證，跳過 Instagram 發文")
+            else:
+                # 暖機：少量讀取操作以確認 session 活著
+                try:
+                    print("🔎 發文前執行 pre-upload 檢查: account_info() ...", end="", flush=True)
+                    ig_client.account_info()
+                    print(" ✅")
+                except Exception:
+                    print(" ⚠️ (account_info 失敗，繼續)")
+
+                try:
+                    print("🔎 pre-upload 檢查: user_info() ...", end="", flush=True)
+                    ig_client.user_info(ig_client.user_id)
+                    print(" ✅")
+                except Exception:
+                    print(" ⚠️ (user_info 失敗，繼續)")
+
+                # 等待 5-15 分鐘以降低驗證/風控觸發（可改為環境變數）
+                wait_seconds = random.randint(5*60, 15*60)
+                print(f"⏳ 上傳前等待 {wait_seconds} 秒（5-15 分鐘間隨機）以暖機與模擬人類行為...")
+                for _ in range(0, wait_seconds, 10):
+                    time.sleep(10)
+
+                # 嘗試上傳，並針對常見挑戰做明確處理
+                try:
+                    ig_client.photo_upload(tmp_path, caption)
+                    print("✅ 已發布到 Instagram")
+                except Exception as e:
+                    msg = str(e)
+                    # 檢查是否是挑戰或驗證型錯誤
+                    if "challenge_required" in msg or "challenge" in msg or (hasattr(e, 'response') and getattr(e.response, 'status_code', None) == 412):
+                        print(f"❌ Instagram 發文被拒（challenge_required / 412）：{msg}")
+                        print("建議：在手機/桌面版 Instagram 完成挑戰驗證，或使用本機重新登入取得新的 sessionid。跳過此次發文。")
+                    elif "login_required" in msg or "LoginRequired" in msg:
+                        print("⚠️ 上傳遭到 login_required，嘗試重新登入後重試一次...")
+                        if ensure_ig_authenticated():
+                            try:
+                                ig_client.photo_upload(tmp_path, caption)
+                                print("✅ 重新登入後已發布到 Instagram")
+                            except Exception as e2:
+                                print(f"❌ 第二次上傳失敗: {e2}")
+                        else:
+                            print("❌ 重新登入失敗，跳過 Instagram 發文")
+                    else:
+                        print(f"❌ Instagram 發文錯誤: {e}")
+        except Exception as e:
+            print(f"❌ 發文前準備或上傳流程發生錯誤: {e}")
         
         # 刪除臨時文件
         try:
