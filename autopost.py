@@ -224,18 +224,33 @@ def ensure_ig_authenticated() -> bool:
         return False
 
     def _is_logged_in() -> bool:
-        """以輕量方式驗證登入：嘗試讀取目前帳號資料或檢查 sessionid。"""
+        """以輕量方式驗證登入：優先使用私有 API (`account_info`)，避免 public lookup 導致 429。
+        如果 `IG_USERNAME` 看起來像 email (包含 '@')，則不要用 username 做 public 查詢。"""
         try:
-            if IG_USERNAME:
-                # 若未登入會拋 LoginRequired
-                ig_client.user_info_by_username(IG_USERNAME)
+            # 優先使用 account_info()（私有 API，依賴已登入 session）
+            try:
+                ig_client.account_info()
                 return True
-            # 沒提供使用者名稱時，以是否存在有效 sessionid 作為弱驗證
+            except LoginRequired:
+                return False
+            except Exception:
+                # 若 account_info 不可用，退回到檢查 sessionid
+                pass
+
+            # 避免以 email 做 public lookup，這會觸發 /web_profile_info 與 429
+            if IG_USERNAME and "@" not in IG_USERNAME:
+                try:
+                    ig_client.user_info_by_username(IG_USERNAME)
+                    return True
+                except LoginRequired:
+                    return False
+                except Exception:
+                    # public lookup 失敗則回傳 False（但不要 raise，讓上層處理）
+                    return False
+
+            # 最後以 sessionid 作為弱驗證
             return bool(getattr(ig_client, "sessionid", None))
-        except LoginRequired:
-            return False
         except Exception:
-            # 保守回傳 False 以觸發重登入
             return False
 
     try:
@@ -291,6 +306,11 @@ def ensure_ig_authenticated() -> bool:
                 if _is_logged_in():
                     return True
             except Exception as e:
+                # 更精確地處理 429 / MaxRetryError 類型錯誤，避免大量重試
+                msg = str(e)
+                if "429" in msg or "too many 429" in msg or "MaxRetryError" in msg:
+                    print(f"⚠️ public requests 被速率限制 (429)：{e}")
+                    return False
                 print(f"⚠️ 透過 sessionid 重新登入失敗: {e}")
 
         # 帳密登入（若提供）
@@ -316,6 +336,11 @@ def ensure_ig_authenticated() -> bool:
                         pass
                     return True
             except Exception as e:
+                # 如果是 public request 的 retry 錯誤，提示並回傳 False
+                msg = str(e)
+                if "429" in msg or "too many 429" in msg or "MaxRetryError" in msg:
+                    print(f"⚠️ public requests 被速率限制 (429)：{e}")
+                    return False
                 print(f"❌ 帳密登入失敗: {e}")
                 return False
 
