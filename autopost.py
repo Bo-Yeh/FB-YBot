@@ -758,20 +758,15 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
             if not ensure_ig_authenticated():
                 print("⚠️ IG 未驗證，跳過 Instagram 發文")
             else:
-                # 暖機：少量讀取操作以確認 session 活著
+                # 暖機：使用私有 API 做最小檢查，避免觸發 public GraphQL（會導致 KeyError）
                 try:
                     print("🔎 發文前執行 pre-upload 檢查: account_info() ...", end="", flush=True)
                     ig_client.account_info()
                     print(" ✅")
-                except Exception:
-                    print(" ⚠️ (account_info 失敗，繼續)")
-
-                try:
-                    print("🔎 pre-upload 檢查: user_info() ...", end="", flush=True)
-                    ig_client.user_info(ig_client.user_id)
-                    print(" ✅")
-                except Exception:
-                    print(" ⚠️ (user_info 失敗，繼續)")
+                except Exception as e:
+                    # 不要打印完整堆棧，只記錄摘要
+                    error_msg = str(e)[:80]
+                    print(f" ⚠️ (account_info 失敗: {error_msg})")
 
                 # 等待（可由環境變數控制）：若被設定為禁用，則跳過等待
                 if IG_PRE_UPLOAD_WAIT_ENABLED is False:
