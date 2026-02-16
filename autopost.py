@@ -315,9 +315,11 @@ def ensure_ig_authenticated() -> bool:
                     # 不是 instagrapi 的設定格式就忽略
                     pass
             else:
-                settings_path = IG_SETTINGS_PATH or os.path.join("downloads", "instagrapi_settings.json")
-                if os.path.exists(settings_path):
-                    ig_client.load_settings(settings_path)
+                # 只有在允許讀寫本地檔案時，才嘗試從磁碟載入 settings
+                if USE_LOCAL_FILES:
+                    settings_path = IG_SETTINGS_PATH or os.path.join("downloads", "instagrapi_settings.json")
+                    if os.path.exists(settings_path):
+                        ig_client.load_settings(settings_path)
         except Exception:
             # 設定載入失敗不影響後續登入嘗試
             pass
