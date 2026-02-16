@@ -27,6 +27,11 @@ def load_config():
     IG_SETTINGS_PATH = os.getenv("IG_SETTINGS_PATH")
     IG_SETTINGS_JSON = os.getenv("IG_SETTINGS_JSON")
     IG_PROXY = os.getenv("IG_PROXY")
+    # Pre-upload / warmup controls
+    IG_PRE_UPLOAD_WAIT_ENABLED = os.getenv("IG_PRE_UPLOAD_WAIT_ENABLED")
+    IG_PRE_UPLOAD_WAIT_SECONDS = os.getenv("IG_PRE_UPLOAD_WAIT_SECONDS")
+    IG_PRE_UPLOAD_WAIT_MIN = os.getenv("IG_PRE_UPLOAD_WAIT_MIN")
+    IG_PRE_UPLOAD_WAIT_MAX = os.getenv("IG_PRE_UPLOAD_WAIT_MAX")
     POST_TO_FACEBOOK = os.getenv("POST_TO_FACEBOOK")
     POST_TO_INSTAGRAM = os.getenv("POST_TO_INSTAGRAM")
 
@@ -48,6 +53,10 @@ def load_config():
             IG_SETTINGS_PATH = IG_SETTINGS_PATH or data.get("IG_SETTINGS_PATH")
             IG_SETTINGS_JSON = IG_SETTINGS_JSON or data.get("IG_SETTINGS_JSON")
             IG_PROXY = IG_PROXY or data.get("IG_PROXY")
+            IG_PRE_UPLOAD_WAIT_ENABLED = IG_PRE_UPLOAD_WAIT_ENABLED if IG_PRE_UPLOAD_WAIT_ENABLED is not None else data.get("IG_PRE_UPLOAD_WAIT_ENABLED")
+            IG_PRE_UPLOAD_WAIT_SECONDS = IG_PRE_UPLOAD_WAIT_SECONDS or data.get("IG_PRE_UPLOAD_WAIT_SECONDS")
+            IG_PRE_UPLOAD_WAIT_MIN = IG_PRE_UPLOAD_WAIT_MIN or data.get("IG_PRE_UPLOAD_WAIT_MIN")
+            IG_PRE_UPLOAD_WAIT_MAX = IG_PRE_UPLOAD_WAIT_MAX or data.get("IG_PRE_UPLOAD_WAIT_MAX")
             POST_TO_FACEBOOK = POST_TO_FACEBOOK if POST_TO_FACEBOOK is not None else data.get("POST_TO_FACEBOOK")
             POST_TO_INSTAGRAM = POST_TO_INSTAGRAM if POST_TO_INSTAGRAM is not None else data.get("POST_TO_INSTAGRAM")
         except FileNotFoundError:
@@ -72,6 +81,24 @@ def load_config():
         POST_TO_FACEBOOK = POST_TO_FACEBOOK.lower() in ['true', '1', 'yes']
     if isinstance(POST_TO_INSTAGRAM, str):
         POST_TO_INSTAGRAM = POST_TO_INSTAGRAM.lower() in ['true', '1', 'yes']
+    # 轉換 IG_PRE_UPLOAD_WAIT_ENABLED
+    if isinstance(IG_PRE_UPLOAD_WAIT_ENABLED, str):
+        IG_PRE_UPLOAD_WAIT_ENABLED = IG_PRE_UPLOAD_WAIT_ENABLED.lower() in ['true', '1', 'yes']
+
+    try:
+        IG_PRE_UPLOAD_WAIT_SECONDS = int(IG_PRE_UPLOAD_WAIT_SECONDS) if IG_PRE_UPLOAD_WAIT_SECONDS is not None else None
+    except ValueError:
+        IG_PRE_UPLOAD_WAIT_SECONDS = None
+
+    try:
+        IG_PRE_UPLOAD_WAIT_MIN = int(IG_PRE_UPLOAD_WAIT_MIN) if IG_PRE_UPLOAD_WAIT_MIN is not None else 5 * 60
+    except ValueError:
+        IG_PRE_UPLOAD_WAIT_MIN = 5 * 60
+
+    try:
+        IG_PRE_UPLOAD_WAIT_MAX = int(IG_PRE_UPLOAD_WAIT_MAX) if IG_PRE_UPLOAD_WAIT_MAX is not None else 15 * 60
+    except ValueError:
+        IG_PRE_UPLOAD_WAIT_MAX = 15 * 60
     
     # 預設值
     POST_TO_FACEBOOK = POST_TO_FACEBOOK if POST_TO_FACEBOOK is not None else True
@@ -92,9 +119,13 @@ def load_config():
         IG_PROXY,
         POST_TO_FACEBOOK,
         POST_TO_INSTAGRAM,
+        IG_PRE_UPLOAD_WAIT_ENABLED,
+        IG_PRE_UPLOAD_WAIT_SECONDS,
+        IG_PRE_UPLOAD_WAIT_MIN,
+        IG_PRE_UPLOAD_WAIT_MAX,
     )
 
-API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, IG_SESSIONID, IG_SETTINGS_PATH, IG_SETTINGS_JSON, IG_PROXY, POST_TO_FACEBOOK, POST_TO_INSTAGRAM = load_config()
+API_KEY, FB_TOKEN, NEWS, MODE, POST_DELAY_MIN, POST_DELAY_MAX, IG_USERNAME, IG_PASSWORD, IG_SESSIONID, IG_SETTINGS_PATH, IG_SETTINGS_JSON, IG_PROXY, POST_TO_FACEBOOK, POST_TO_INSTAGRAM, IG_PRE_UPLOAD_WAIT_ENABLED, IG_PRE_UPLOAD_WAIT_SECONDS, IG_PRE_UPLOAD_WAIT_MIN, IG_PRE_UPLOAD_WAIT_MAX = load_config()
 
 # 檢查必要變數
 missing = []
@@ -378,37 +409,28 @@ prompt_with_title = """
 async def text_api(msg: str) -> str:
     """僅生成內文"""
     if not msg:
-        return "這段訊息是空的"
-    def _call():
-        try:
-            client = openai.OpenAI(api_key=API_KEY)
-            result = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "user", "content": msg}
-                ],
-                temperature=1.0,
-                max_tokens=200
-            )
-            # 支援不同回傳格式
-            try:
-                return result.choices[0].message.content.strip()
-            except Exception:
-                # fallback: 可能為 dict 形式
-                if isinstance(result, dict) and "choices" in result and len(result["choices"])>0:
-                    ch = result["choices"][0]
-                    if isinstance(ch, dict) and "message" in ch and "content" in ch["message"]:
-                        return ch["message"]["content"].strip()
-                return "生成失敗"
-        except Exception as e:
-            print("GPT 發生錯誤:", e)
-            return "生成失敗"
-    return await asyncio.to_thread(_call)
+    # 只使用私有 API 做最小的暖機：避免觸發 public GraphQL（會導致 429）
+    success = False
+    try:
+        print(f"  ⏳ 執行: account_info() ...", end="", flush=True)
+        cl.account_info()
+        print(" ✅")
+        success = True
+    except LoginRequired:
+        print(" ❌ (登入已失效)")
+        return False
+    except Exception as e:
+        print(f" ⚠️ (account_info 失敗: {str(e)[:80]})")
 
-async def text_api_with_title(msg: str) -> tuple:
-    """生成短標題和內文，返回 (標題, 內文)"""
-    if not msg:
-        return "這段訊息是空的", "這段訊息是空的"
+    # 小幅隨機延遲模擬人類
+    time.sleep(random.uniform(0.5, 2.0))
+
+    if success:
+        print("✅ 暖機完成（私有 API）！")
+        return True
+    else:
+        print("❌ 暖機失敗（私有 API 不可用）")
+        return False
     def _call():
         try:
             client = openai.OpenAI(api_key=API_KEY)
@@ -762,11 +784,20 @@ def post_to_instagram(text, image_title=None, news_url=None, hashtags=None):
                 except Exception:
                     print(" ⚠️ (user_info 失敗，繼續)")
 
-                # 等待 5-15 分鐘以降低驗證/風控觸發（可改為環境變數）
-                wait_seconds = random.randint(5*60, 15*60)
-                print(f"⏳ 上傳前等待 {wait_seconds} 秒（5-15 分鐘間隨機）以暖機與模擬人類行為...")
-                for _ in range(0, wait_seconds, 10):
-                    time.sleep(10)
+                # 等待（可由環境變數控制）：若被設定為禁用，則跳過等待
+                if IG_PRE_UPLOAD_WAIT_ENABLED is False:
+                    print("⚡ IG_PRE_UPLOAD_WAIT_ENABLED=false，跳過上傳前等待")
+                else:
+                    if IG_PRE_UPLOAD_WAIT_SECONDS:
+                        wait_seconds = int(IG_PRE_UPLOAD_WAIT_SECONDS)
+                    else:
+                        wait_seconds = random.randint(int(IG_PRE_UPLOAD_WAIT_MIN), int(IG_PRE_UPLOAD_WAIT_MAX))
+                    # 若等待時間過長（在測試或 CI），可快速通過
+                    if wait_seconds > 600 and os.getenv("CI"):
+                        wait_seconds = 10
+                    print(f"⏳ 上傳前等待 {wait_seconds} 秒（由 IG_PRE_UPLOAD_WAIT_* 控制）以暖機與模擬人類行為...")
+                    for _ in range(0, wait_seconds, 10):
+                        time.sleep(10)
 
                 # 嘗試上傳，並針對常見挑戰做明確處理
                 try:
