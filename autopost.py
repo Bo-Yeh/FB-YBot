@@ -419,30 +419,10 @@ prompt_with_title = """
 """
 
 async def text_api(msg: str) -> str:
-    """僅生成內文"""
+    """呼叫 OpenAI 生成內文，回傳內文文字（string）。"""
     if not msg:
-    # 只使用私有 API 做最小的暖機：避免觸發 public GraphQL（會導致 429）
-    success = False
-    try:
-        print(f"  ⏳ 執行: account_info() ...", end="", flush=True)
-        cl.account_info()
-        print(" ✅")
-        success = True
-    except LoginRequired:
-        print(" ❌ (登入已失效)")
-        return False
-    except Exception as e:
-        print(f" ⚠️ (account_info 失敗: {str(e)[:80]})")
+        return ""
 
-    # 小幅隨機延遲模擬人類
-    time.sleep(random.uniform(0.5, 2.0))
-
-    if success:
-        print("✅ 暖機完成（私有 API）！")
-        return True
-    else:
-        print("❌ 暖機失敗（私有 API 不可用）")
-        return False
     def _call():
         try:
             client = openai.OpenAI(api_key=API_KEY)
@@ -455,6 +435,7 @@ async def text_api(msg: str) -> str:
                 temperature=1.0,
                 max_tokens=300
             )
+
             # 支援不同回傳格式
             try:
                 content = result.choices[0].message.content.strip()
@@ -465,36 +446,32 @@ async def text_api(msg: str) -> str:
                     if isinstance(ch, dict) and "message" in ch and "content" in ch["message"]:
                         content = ch["message"]["content"].strip()
                     else:
-                        return "生成失敗", "生成失敗"
+                        return "生成失敗"
                 else:
-                    return "生成失敗", "生成失敗"
-            
-            # 解析標題和內文
+                    return "生成失敗"
+
+            # 解析標題和內文（如有），回傳內文為主
             lines = content.split('\n')
             title = ""
             text = ""
-            
             for line in lines:
                 if line.startswith("標題：") or line.startswith("標題:"):
                     title = line.replace("標題：", "").replace("標題:", "").strip()
                 elif line.startswith("內文：") or line.startswith("內文:"):
                     text = line.replace("內文：", "").replace("內文:", "").strip()
-            
-            # 如果解析失敗，嘗試使用整個內容
-            if not title or not text:
-                # 嘗試按換行分割，第一行當標題，其餘當內文
+
+            if not text:
                 parts = content.split('\n', 1)
                 if len(parts) == 2:
-                    title = parts[0].strip()
                     text = parts[1].strip()
                 else:
-                    title = content[:15] + "..."  # 取前15字作為標題
-                    text = content
-            
-            return title, text
+                    text = content.strip()
+
+            return text
         except Exception as e:
             print("GPT 發生錯誤:", e)
-            return "生成失敗", "生成失敗"
+            return "生成失敗"
+
     return await asyncio.to_thread(_call)
 
 async def generate_hashtags(news_content: str) -> str:
